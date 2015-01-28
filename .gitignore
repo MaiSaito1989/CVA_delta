@@ -1,0 +1,11 @@
+### OSX ###
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+###repository
+*.o
+cva
+cva_delta
+Makefile
