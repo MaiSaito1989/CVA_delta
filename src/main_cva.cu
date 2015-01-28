@@ -53,7 +53,7 @@ __device__ double r_a1(const double t) {
 
 //default intensity lambda
 __device__ double dp_lambda(const double t) {
-	return 0.00001;
+	return 0.0001;
 }
 
 __device__ VECTOR_FIELD1 d_r_vf_x00 = r_vf_x00;
@@ -309,12 +309,14 @@ __global__ void Calc_CVA(
 
 int main(void) {
 	int i,j,k,l,n;
-	double result=0.0;
 
 	// Copy up each piece separately, including new “name” pointer value
 	unsigned long init[4]={0x123, 0x234, 0x345, 0x456}, length=4;
 	init_by_array(init, length);
 
+//	clock_t start, end;
+//    start = clock();
+//	printf( "開始時間:%lf\n", start);
 
 #define TL0  24
 #define TL21 20
@@ -885,12 +887,14 @@ int main(void) {
 	double *d_outputs;
 	checkCudaErrors(cudaMalloc((void**)&d_outputs, sizeof(double)*NUM_OF_CURRENCY*time_stamps->length_sortedT*NUM_OF_THREADS));
 
-	int bd = 32;
-	int gd = NUM_OF_THREADS/32;
+	int bd = 1024;
+	int gd = NUM_OF_THREADS/bd;
 
 	checkCudaErrors(cudaMemcpy(d_outputs, outputs, sizeof(double)*NUM_OF_CURRENCY*time_stamps->length_sortedT*NUM_OF_THREADS, cudaMemcpyHostToDevice));
 
 	Calc_CVA<<<bd,gd>>>(d_W, d_CVA, d_rs, d_Ds, d_zcbs, d_swaps, d_spot_fxs, d_nsets, d_dp, d_time_stamps, NUM_OF_THREADS, time_stamps->length_sortedT,d_outputs);
+//	cudaDeviceSynchronize();
+
 
 	checkCudaErrors(cudaMemcpy(CVA, d_CVA, sizeof(double)*NUM_OF_THREADS, cudaMemcpyDeviceToHost));
 	checkCudaErrors(cudaMemcpy(outputs, d_outputs, sizeof(double)*NUM_OF_CURRENCY*time_stamps->length_sortedT*NUM_OF_THREADS, cudaMemcpyDeviceToHost));
@@ -929,7 +933,13 @@ int main(void) {
 		checkCudaErrors(cudaMemcpy(nsets->nset[n], d_nset[n], sizeof(double)*time_stamps->length_sortedT, cudaMemcpyDeviceToHost));
 	}
 
+	//cudaDeviceSynchronize();
+//	end = clock();
+//	printf( "終了時間:%lf[s]\n", (double)end/CLOCKS_PER_SEC);
+//	printf( "処理時間:%lf[s]\n", (double)(end - start)/CLOCKS_PER_SEC);
+
 	
+	double result = 0.0;
 	printf("rs->x\n");
 	for (k=0; k<NUM_OF_CURRENCY; k++){
 		printf("k:%d\n" , k);
@@ -1010,16 +1020,6 @@ int main(void) {
 	}
 	printf("\n%lf \n", result);
 
-	printf("outputs\n");
-	for(k=0; k<NUM_OF_CURRENCY;k++){
-		for (n=0; n<20; n++) {
-			for (j=0; j<time_stamps->length_sortedT; j++) {
-				printf("%+5.4lf ", outputs[k*time_stamps->length_sortedT*NUM_OF_THREADS + n*time_stamps->length_sortedT + j]);
-			}
-			printf("\n");
-		}
-		printf("\n");
-	}
 	printf("Wd\n");
 	for(i=0; i<20; i++){
 		for(k=0; k<time_stamps->length_sortedT; k++){

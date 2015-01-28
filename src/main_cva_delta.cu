@@ -4,6 +4,7 @@
 #include <random_generator.h>
 #include <helper_cuda.h>
 #include <mt19937.h>
+#include <time.h>
 
 #include <cva_common.h>
 #include <calc_cva.h>
@@ -186,7 +187,6 @@ __global__ void Calc_CVA_Delta(
 			temp3=(zcb->P[k][threadId][m+1]/zcb->P[k][threadId][0])*exp(-(v1-v2)/2.0);
 			
 			discount_factor->D[k][threadId][m+1] = temp2*temp3;
-			outputs[threadId*time_stamps->length_sortedT + k*time_stamps->length_sortedT*N + m] = zcb->P[k][threadId][m+1];
 		}
 	}
 
@@ -323,9 +323,61 @@ __global__ void Calc_CVA_Delta(
 		}
 	}
 	
-	
 	//second term
-	//differentiate FwdR by P
+	for (j=0; j<NUM_OF_SWAPS; j++) {
+		//expected loss
+		for (mm=0; mm<time_stamps->length_T0; mm++) {
+			for(m=0; m<NUM_OF_MARKET_DATA; m++){
+				sum = 0.0;
+				for (l=0; l<time_stamps->length_Ti[g_c][j]-2; l++) {
+					sum +=
+					1.0/
+					(	zcb->P[g_c][threadId][time_stamps->T0[mm]*time_stamps->length_sortedT + time_stamps->Ti[g_c][j][l+1]]/
+						zcb->P[g_c][threadId][time_stamps->T0[mm]*time_stamps->length_sortedT + time_stamps->Ti[g_c][j][l+2]]
+					)	
+					*
+					((
+						-1.0/
+						zcb->P[g_c][threadId][0 + time_stamps->T0[mm]]*
+						zcb->p_P[g_c][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m]
+						+
+						1.0/
+						zcb->P[g_c][threadId][0 + time_stamps->Ti[g_c][j][l+1]]*
+						zcb->p_P[g_c][time_stamps->Ti[g_c][j][l+1]*NUM_OF_MARKET_DATA + m]
+					)
+					+
+					(
+						-1.0/
+						zcb->P[g_c][threadId][0 + time_stamps->T0[mm]]*
+						zcb->p_P[g_c][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m]
+						+
+						1.0/
+						zcb->P[g_c][threadId][0 + time_stamps->Ti[g_c][j][l+2]]*
+						zcb->p_P[g_c][time_stamps->Ti[g_c][j][l+2]*NUM_OF_MARKET_DATA + m]
+					));
+				}
+				sum +=
+				(
+					zcb->P[g_c][threadId][time_stamps->T0[mm]*time_stamps->length_sortedT + time_stamps->Ti[g_c][j][0]]/
+					zcb->P[g_c][threadId][time_stamps->T0[mm]*time_stamps->length_sortedT + time_stamps->Ti[g_c][j][1]]
+				)
+				*
+				(   -1.0/
+					zcb->P[g_c][threadId][0 + time_stamps->T0[mm]]*
+					zcb->p_P[g_c][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m]
+					+
+					1.0/
+					zcb->P[g_c][threadId][0 + time_stamps->Ti[g_c][j][1]]*
+					zcb->p_P[g_c][time_stamps->Ti[g_c][j][0]*NUM_OF_MARKET_DATA + m]
+				);
+				sum *= swap->N[g_c][j];
+
+				swap->p_swap[g_c][j][threadId][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m] += sum;
+			}
+		}
+	}
+/*	
+	//second term
 	for (j=0; j<NUM_OF_SWAPS; j++) {
 		//expected loss
 		for (mm=0; mm<time_stamps->length_T0; mm++) {
@@ -383,6 +435,8 @@ __global__ void Calc_CVA_Delta(
 			}
 		}
 	}
+	*/
+
 	/*
 	differentiate Fxs
 	*/
@@ -475,10 +529,9 @@ __global__ void Calc_CVA_Delta(
 	temp3=0.0;
 	int_temp=0;
 	if(g_c == 0) {
-		for (mm=0; mm<time_stamps->length_T0; mm++) {
-			for (m=0; m<NUM_OF_MARKET_DATA; m++) {
-				CVA_Delta[threadId*NUM_OF_MARKET_DATA + m] = 0.0;
-
+		for (m=0; m<NUM_OF_MARKET_DATA; m++) {
+			CVA_Delta[threadId*NUM_OF_MARKET_DATA + m] = 0.0;
+			for (mm=0; mm<time_stamps->length_T0; mm++) {
 				//PS
 				//integrate(-lambda))
 				for (n=int_temp; n<time_stamps->T0[mm]; n++) {
@@ -490,13 +543,12 @@ __global__ void Calc_CVA_Delta(
 				//SP(Ti)
 				temp2=1.0-exp(-temp1);
 				
-				//expected loss*p_D
-				CVA_Delta[threadId*NUM_OF_MARKET_DATA + m] += 
-					discount_factor->p_D[0][threadId][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m]*
-					nset->nset[threadId][time_stamps->T0[mm]]*(temp2-temp3);
-				
-				//(derivative of expected loss)*D
 				if (nset->nset[threadId][time_stamps->T0[mm]]>0.0) {
+					//expected loss*p_D
+					CVA_Delta[threadId*NUM_OF_MARKET_DATA + m] += 
+						discount_factor->p_D[0][threadId][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m]*
+						nset->nset[threadId][time_stamps->T0[mm]]*(temp2-temp3);
+				//(derivative of expected loss)*D
 					CVA_Delta[threadId*NUM_OF_MARKET_DATA + m] += 
 						discount_factor->D[0][threadId][time_stamps->T0[mm]]*
 						nset->p_nset[threadId][time_stamps->T0[mm]*NUM_OF_MARKET_DATA + m]*(temp2-temp3);
@@ -513,7 +565,10 @@ int main(void) {
 	// Copy up each piece separately, including new “name” pointer value
 	unsigned long init[4]={0x123, 0x234, 0x345, 0x456}, length=4;
 	init_by_array(init, length);
-
+ 	
+//	clock_t start, end;
+//    start = clock();
+//	printf( "開始時間:%lf\n", start);
 
 #define TL0  24
 #define TL21 20
@@ -840,13 +895,23 @@ int main(void) {
 			}
 		}
 	}
+
+	for (l=0; l<time_stamps->length_T0; l++) {
+		for (m=0; m<NUM_OF_MARKET_DATA; m++) {
+			if (time_stamps->T0[l]==m) {
+				zcbs->p_P[Delta_Currency][time_stamps->T0[l]*NUM_OF_MARKET_DATA + m] = 1.0;
+			} else {
+				zcbs->p_P[Delta_Currency][time_stamps->T0[l]*NUM_OF_MARKET_DATA + m] = 0.0;
+			}
+		}
+	}
 	for (j=0; j<NUM_OF_SWAPS; j++) {
-		for (l=0; l<time_stamps->length_sortedT; l++) {
+		for (l=0; l<time_stamps->length_Ti[Delta_Currency][j]; l++) {
 			for (m=0; m<NUM_OF_MARKET_DATA; m++) {
-				if (l==m) {
-					zcbs->p_P[Delta_Currency][time_stamps->Ti[Delta_Currency][j][l]*NUM_OF_MARKET_DATA + time_stamps->Ti[Delta_Currency][j][l]] = 1.0;
+				if (time_stamps->Ti[Delta_Currency][j][l]==m) {
+					zcbs->p_P[Delta_Currency][time_stamps->Ti[Delta_Currency][j][l]*NUM_OF_MARKET_DATA + m] = 1.0;
 				} else {
-					zcbs->p_P[Delta_Currency][time_stamps->Ti[Delta_Currency][j][l]*NUM_OF_MARKET_DATA + time_stamps->Ti[Delta_Currency][j][l]] = 0.0;
+					zcbs->p_P[Delta_Currency][time_stamps->Ti[Delta_Currency][j][l]*NUM_OF_MARKET_DATA + m] = 0.0;
 				}
 			}
 		}
@@ -1064,8 +1129,8 @@ int main(void) {
 
 	checkCudaErrors(cudaMalloc((void**)&d_nsets,sizeof(NSETS)));
 	for(n=0; n<NUM_OF_THREADS; n++){
-		checkCudaErrors(cudaMalloc((void**)&d_nset[n], (sizeof(double*)*time_stamps->length_sortedT)));
-		checkCudaErrors(cudaMalloc((void**)&d_p_nset[n], (sizeof(double*)*time_stamps->length_sortedT*NUM_OF_MARKET_DATA)));
+		checkCudaErrors(cudaMalloc((void**)&d_nset[n], sizeof(double)*time_stamps->length_sortedT));
+		checkCudaErrors(cudaMalloc((void**)&d_p_nset[n], sizeof(double)*time_stamps->length_sortedT*NUM_OF_MARKET_DATA));
 	}
 
 	for(n=0; n<NUM_OF_THREADS; n++){
@@ -1168,11 +1233,12 @@ int main(void) {
 	double *d_outputs;
 	checkCudaErrors(cudaMalloc((void**)&d_outputs, sizeof(double)*NUM_OF_CURRENCY*time_stamps->length_sortedT*NUM_OF_THREADS));
 
-	int bd = 32;
-	int gd = NUM_OF_THREADS/32;
+	int bd = 1024;
+	int gd = NUM_OF_THREADS/bd;
 
 	checkCudaErrors(cudaMemcpy(d_outputs, outputs, sizeof(double)*NUM_OF_CURRENCY*time_stamps->length_sortedT*NUM_OF_THREADS, cudaMemcpyHostToDevice));
 
+	cudaDeviceSynchronize();
 	Calc_CVA_Delta<<<bd,gd>>>(
 	d_W, 
 	d_CVA_Delta,
@@ -1188,6 +1254,7 @@ int main(void) {
 	time_stamps->length_sortedT,
 	0,
 	d_outputs);
+	cudaDeviceSynchronize();
 
 	checkCudaErrors(cudaMemcpy(CVA_Delta, d_CVA_Delta, sizeof(double)*NUM_OF_THREADS*NUM_OF_MARKET_DATA, cudaMemcpyDeviceToHost));
 	checkCudaErrors(cudaMemcpy(outputs, d_outputs, sizeof(double)*NUM_OF_CURRENCY*time_stamps->length_sortedT*NUM_OF_THREADS, cudaMemcpyDeviceToHost));
@@ -1231,6 +1298,10 @@ int main(void) {
 		checkCudaErrors(cudaMemcpy(nsets->p_nset[n], d_p_nset[n], sizeof(double)*time_stamps->length_sortedT*NUM_OF_MARKET_DATA, cudaMemcpyDeviceToHost));
 	}
 
+//	end = clock();
+//	printf( "終了時間:%lf[s]\n", (double)end/CLOCKS_PER_SEC);
+//	printf( "処理時間:%lf[s]\n", (double)(end - start)/CLOCKS_PER_SEC);
+	
 	
 	printf("rs->x\n");
 	for (k=0; k<NUM_OF_CURRENCY; k++){
@@ -1310,8 +1381,8 @@ int main(void) {
 	printf("swap->p_swap\n");
 	for (k=0; k<NUM_OF_CURRENCY; k++){
 		for (j=0; j<NUM_OF_SWAPS; j++) {
-			printf("k:%d j:%d\n" , k, j);
 			for (n=0; n<2; n++){
+				printf("k:%d j:%d, n:%d\n" , k, j, n);
 				for(i=0; i<time_stamps->length_sortedT; i++){
 					for (l=0; l<NUM_OF_MARKET_DATA; l++) {
 						printf("%5.2lf ", swaps->p_swap[k][n][j][i*NUM_OF_MARKET_DATA + l]);
@@ -1372,17 +1443,6 @@ int main(void) {
 		printf("\n");
 	}
 
-	printf("outputs\n");
-	for(k=0; k<NUM_OF_CURRENCY;k++){
-		for (n=0; n<20; n++) {
-			for (j=0; j<time_stamps->length_sortedT; j++) {
-				printf("%+5.4lf ", outputs[k*time_stamps->length_sortedT*NUM_OF_THREADS + n*time_stamps->length_sortedT + j]);
-			}
-			printf("\n");
-		}
-		printf("\n");
-	}
-	/*
 	printf("Wd\n");
 	for(i=0; i<20; i++){
 		for(k=0; k<time_stamps->length_sortedT; k++){
@@ -1409,7 +1469,7 @@ int main(void) {
 			printf("\n");	
 		}
 	}
-	*/
+	
 
 	for(i=0; i<NUM_OF_CURRENCY; i++){
 		free(Ti[i]);
